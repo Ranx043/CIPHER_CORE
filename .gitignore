@@ -1,0 +1,49 @@
+# CIPHER_CORE .gitignore
+# Memoria eterna - solo archivos esenciales
+
+# Archivos temporales
+*.tmp
+*.temp
+*.bak
+*.swp
+*~
+
+# Logs
+*.log
+logs/
+
+# Cache
+.cache/
+__pycache__/
+*.pyc
+
+# Node (si se agregan scripts)
+node_modules/
+npm-debug.log
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.idea/
+.vscode/
+*.sublime-*
+
+# Secrets (NUNCA commitear)
+.env
+.env.*
+secrets/
+credentials/
+*.key
+*.pem
+
+# Archivos grandes de datos
+*.csv
+*.json.gz
+data/raw/
+
+# Backups locales
+backups/
+*.backup
