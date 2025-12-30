@@ -3,15 +3,20 @@ CIPHER Sniper Bot - Paper Trading Engine
 Simulates trades based on creator scores without real money
 """
 import asyncio
+import json
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from config import (
     PAPER_INITIAL_BALANCE, MAX_POSITION_SIZE, MAX_OPEN_POSITIONS,
     STOP_LOSS_PERCENT, TAKE_PROFIT_1_PERCENT, TAKE_PROFIT_2_PERCENT,
-    MIN_CREATOR_SCORE, MIN_CREATOR_TOKENS, get_position_size
+    MIN_CREATOR_SCORE, MIN_CREATOR_TOKENS, get_position_size, BASE_DIR
 )
 from database import db
+
+# Control file for real-time adjustments
+CONTROL_FILE = BASE_DIR / "control.json"
 
 
 class PaperTrader:
@@ -22,6 +27,23 @@ class PaperTrader:
     def __init__(self):
         self.active_positions: Dict[str, Dict] = {}  # mint -> position
         self.initialized = False
+        self.control = {}  # Real-time control settings
+        self._load_control()
+
+    def _load_control(self) -> Dict:
+        """Load control settings from JSON file (hot reload)"""
+        try:
+            if CONTROL_FILE.exists():
+                with open(CONTROL_FILE, 'r') as f:
+                    self.control = json.load(f)
+        except Exception as e:
+            print(f"[CONTROL] Error loading control file: {e}")
+        return self.control
+
+    def get_control(self, key: str, default=None):
+        """Get control value with fallback to default"""
+        self._load_control()  # Reload each time for hot updates
+        return self.control.get(key, default)
 
     async def initialize(self):
         """Initialize paper trading portfolio"""
@@ -46,15 +68,37 @@ class PaperTrader:
         Evaluate if we should paper-trade this token
         Returns True if we should buy
         """
+        # Check control settings (hot reload)
+        if not self.get_control("trading_enabled", True):
+            return False
+
+        if self.get_control("pause_new_trades", False):
+            return False
+
         creator = token_data.get("creator")
         creator_score = token_data.get("creator_score", 50)
         creator_tokens = token_data.get("creator_tokens", 1)
 
-        # Check basic criteria
-        if creator_score < MIN_CREATOR_SCORE:
+        # Check blacklist/whitelist from control
+        blacklist = self.get_control("blacklist_creators", [])
+        whitelist = self.get_control("whitelist_creators", [])
+
+        if creator in blacklist:
+            print(f"[SKIP] Creator {creator[:16]}... is blacklisted")
             return False
 
-        if creator_tokens < MIN_CREATOR_TOKENS:
+        # If whitelist exists and is not empty, only trade whitelisted
+        if whitelist and creator not in whitelist:
+            return False
+
+        # Check basic criteria (use control values or defaults)
+        min_score = self.get_control("min_creator_score", MIN_CREATOR_SCORE)
+        min_tokens = self.get_control("min_creator_tokens", MIN_CREATOR_TOKENS)
+
+        if creator_score < min_score:
+            return False
+
+        if creator_tokens < min_tokens:
             return False
 
         # Check if we have too many open positions
@@ -67,7 +111,8 @@ class PaperTrader:
 
         # Check balance
         portfolio = await db.get_paper_portfolio()
-        position_size = get_position_size(creator_score)
+        max_size = self.get_control("max_position_size", MAX_POSITION_SIZE)
+        position_size = min(get_position_size(creator_score), max_size)
 
         if portfolio.get("balance_sol", 0) < position_size:
             return False
@@ -122,6 +167,18 @@ class PaperTrader:
         Check all positions for exit conditions
         price_updates: {mint: current_price}
         """
+        # Check if we should close all positions (emergency exit)
+        if self.get_control("close_all_positions", False):
+            print("[CONTROL] Emergency close all positions triggered!")
+            for mint in list(self.active_positions.keys()):
+                current_price = price_updates.get(mint, 0)
+                await self.close_position(mint, current_price, "emergency_close")
+            return
+
+        # Get control values for exits
+        stop_loss = self.get_control("stop_loss_percent", STOP_LOSS_PERCENT)
+        take_profit = self.get_control("take_profit_percent", TAKE_PROFIT_2_PERCENT)
+
         for mint, position in list(self.active_positions.items()):
             current_price = price_updates.get(mint)
 
@@ -134,17 +191,13 @@ class PaperTrader:
             price_change_pct = ((current_price - entry_price) / entry_price) * 100
 
             # Check stop loss
-            if price_change_pct <= -STOP_LOSS_PERCENT:
+            if price_change_pct <= -stop_loss:
                 await self.close_position(mint, current_price, "stop_loss")
                 continue
 
-            # Check take profit levels
-            if price_change_pct >= TAKE_PROFIT_2_PERCENT:
-                await self.close_position(mint, current_price, "take_profit_2")
-            elif price_change_pct >= TAKE_PROFIT_1_PERCENT:
-                # Partial exit logic could go here
-                # For now, we just log and wait for TP2
-                pass
+            # Check take profit
+            if price_change_pct >= take_profit:
+                await self.close_position(mint, current_price, "take_profit")
 
     async def close_position(self, mint: str, exit_price: float, reason: str):
         """

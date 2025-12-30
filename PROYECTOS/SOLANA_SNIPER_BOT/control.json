@@ -1,0 +1,12 @@
+{
+    "trading_enabled": true,
+    "min_creator_score": 60,
+    "min_creator_tokens": 2,
+    "max_position_size": 0.1,
+    "stop_loss_percent": 25,
+    "take_profit_percent": 100,
+    "pause_new_trades": false,
+    "close_all_positions": false,
+    "blacklist_creators": [],
+    "whitelist_creators": []
+}
